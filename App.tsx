@@ -9,8 +9,14 @@ import { Label } from './components/ui/label';
 import { Select } from './components/ui/select';
 import { ReceiptUploadDialog } from './components/ReceiptUploadDialog';
 import { MonthlyChart } from './components/MonthlyChart';
-import { Receipt, Plus } from 'lucide-react';
+import { Receipt, Plus, Edit, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
+
+interface ExpenseItem {
+  name: string;
+  price?: number;
+  quantity?: number;
+}
 
 interface Expense {
   id: string;
@@ -18,13 +24,14 @@ interface Expense {
   storeName: string;
   amount: number;
   category: string;
-  items: string[];
+  items: (string | ExpenseItem)[];
 }
 
 export default function App() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isReceiptDialogOpen, setIsReceiptDialogOpen] = useState(false);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([
     {
       id: '1',
@@ -81,13 +88,18 @@ export default function App() {
       return;
     }
 
+    if (editingExpense) {
+      handleUpdateExpense();
+      return;
+    }
+
     const expense: Expense = {
       id: Date.now().toString(),
       date: newExpense.date,
       storeName: newExpense.storeName,
       amount: newExpense.amount,
       category: newExpense.category,
-      items: newExpense.memo ? [newExpense.memo] : []
+      items: newExpense.memo ? newExpense.memo.split(',').map(item => item.trim()) : []
     };
 
     setExpenses([...expenses, expense]);
@@ -108,7 +120,7 @@ export default function App() {
     storeName: string;
     amount: number;
     category: string;
-    items: string[];
+    items: (string | ExpenseItem)[];
   }) => {
     const expense: Expense = {
       id: Date.now().toString(),
@@ -117,6 +129,53 @@ export default function App() {
     
     setExpenses([...expenses, expense]);
     setSelectedDate(data.date);
+  };
+
+  const handleEditExpense = (expense: Expense) => {
+    setEditingExpense(expense);
+    setNewExpense({
+      date: expense.date,
+      storeName: expense.storeName,
+      amount: expense.amount,
+      category: expense.category,
+      memo: expense.items.map(item => typeof item === 'string' ? item : item.name).join(', ')
+    });
+    setIsDialogOpen(true);
+  };
+
+  const handleDeleteExpense = (expenseId: string) => {
+    if (confirm('정말 삭제하시겠습니까?')) {
+      setExpenses(expenses.filter(exp => exp.id !== expenseId));
+    }
+  };
+
+  const handleUpdateExpense = () => {
+    if (!editingExpense || !newExpense.storeName || !newExpense.amount || !newExpense.category) {
+      alert('모든 필드를 입력해주세요.');
+      return;
+    }
+
+    const updatedExpense: Expense = {
+      id: editingExpense.id,
+      date: newExpense.date,
+      storeName: newExpense.storeName,
+      amount: newExpense.amount,
+      category: newExpense.category,
+      items: newExpense.memo ? newExpense.memo.split(',').map(item => item.trim()) : []
+    };
+
+    setExpenses(expenses.map(exp => exp.id === editingExpense.id ? updatedExpense : exp));
+    setIsDialogOpen(false);
+    setEditingExpense(null);
+    
+    // 폼 초기화
+    setNewExpense({
+      date: selectedDate,
+      storeName: '',
+      amount: 0,
+      category: '',
+      memo: ''
+    });
   };
 
   return (
@@ -136,6 +195,7 @@ export default function App() {
               size="icon" 
               className="h-12 w-12"
               onClick={() => {
+                setEditingExpense(null);
                 setNewExpense({
                   date: selectedDate,
                   storeName: '',
@@ -233,19 +293,51 @@ export default function App() {
                               {expense.category}
                             </Badge>
                             {expense.items.length > 0 && (
-                              <div className="flex flex-wrap gap-1 mt-2">
-                                {expense.items.map((item, index) => (
-                                  <span key={index} className="text-sm text-gray-600">
-                                    {item}
-                                    {index < expense.items.length - 1 && ', '}
-                                  </span>
-                                ))}
+                              <div className="mt-2">
+                                <h4 className="text-sm font-medium mb-2">품목 목록</h4>
+                                <ul className="list-none p-0 space-y-2">
+                                  {expense.items.map((item, index) => {
+                                    if (typeof item === 'string') {
+                                      return (
+                                        <li key={index} className="text-sm text-gray-600">
+                                          {item}
+                                        </li>
+                                      );
+                                    } else {
+                                      return (
+                                        <li key={index} className="text-sm">
+                                          <strong>{item.name}</strong>
+                                          {item.price && <span className="text-gray-600"> {item.price.toLocaleString()}원</span>}
+                                          {item.quantity && <span className="text-gray-500"> (수량: {item.quantity})</span>}
+                                        </li>
+                                      );
+                                    }
+                                  })}
+                                </ul>
                               </div>
                             )}
                           </div>
-                          <div className="text-right">
+                          <div className="flex flex-col items-end gap-2">
                             <div className="text-lg font-bold text-red-600">
                               -{expense.amount.toLocaleString()}원
+                            </div>
+                            <div className="flex gap-2">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={() => handleEditExpense(expense)}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-red-600 hover:text-red-700"
+                                onClick={() => handleDeleteExpense(expense.id)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
                             </div>
                           </div>
                         </div>
@@ -260,12 +352,27 @@ export default function App() {
       </div>
 
       {/* 지출 입력 다이얼로그 */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+      <Dialog 
+        open={isDialogOpen} 
+        onOpenChange={(open) => {
+          setIsDialogOpen(open);
+          if (!open) {
+            setEditingExpense(null);
+            setNewExpense({
+              date: selectedDate,
+              storeName: '',
+              amount: 0,
+              category: '',
+              memo: ''
+            });
+          }
+        }}
+      >
         <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>지출 입력</DialogTitle>
-            <DialogDescription>지출 내역을 직접 입력하세요</DialogDescription>
-          </DialogHeader>
+        <DialogHeader>
+          <DialogTitle>{editingExpense ? '지출 수정' : '지출 입력'}</DialogTitle>
+          <DialogDescription>{editingExpense ? '지출 내역을 수정하세요' : '지출 내역을 직접 입력하세요'}</DialogDescription>
+        </DialogHeader>
           
           <div className="space-y-4 py-4">
             <div className="space-y-2">
@@ -338,7 +445,7 @@ export default function App() {
               className="bg-black text-white hover:bg-black/90"
               onClick={handleAddExpense}
             >
-              저장
+              {editingExpense ? '수정' : '저장'}
             </Button>
           </div>
         </DialogContent>
