@@ -12,11 +12,12 @@ import {
   StatusBar,
 } from 'react-native';
 import { Calendar } from 'react-native-calendars';
-import { launchImageLibrary, launchCamera, ImagePickerResponse, Asset } from 'react-native-image-picker';
+import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { format } from 'date-fns';
 import { LineChart } from 'react-native-chart-kit';
 import { Dimensions, Platform, Image } from 'react-native';
+import Constants from 'expo-constants';
 
 interface ExpenseItem {
   name: string;
@@ -204,7 +205,7 @@ export default function App() {
     setIsReceiptModalVisible(true);
   };
 
-  const handleImagePicker = (useCamera: boolean = false) => {
+  const handleImagePicker = async (useCamera: boolean = false) => {
     // 웹에서는 HTML input 사용
     if (Platform.OS === 'web') {
       if (typeof document !== 'undefined') {
@@ -226,48 +227,35 @@ export default function App() {
       return;
     }
 
-    // 모바일에서는 react-native-image-picker 사용
-    const options = {
-      mediaType: 'photo' as const,
-      quality: 0.8,
-      includeBase64: false,
-      saveToPhotos: false,
-      selectionLimit: 1,
-    };
-
-    const callback = (response: ImagePickerResponse) => {
-      console.log('ImagePicker Response:', response);
-      
-      if (response.didCancel) {
-        console.log('사용자가 취소했습니다.');
-        return;
-      }
-      
-      if (response.errorCode) {
-        let errorMessage = '이미지를 가져오는 중 오류가 발생했습니다.';
-        switch (response.errorCode) {
-          case 'camera_unavailable':
-            errorMessage = '카메라를 사용할 수 없습니다.';
-            break;
-          case 'permission':
-            errorMessage = '카메라/갤러리 접근 권한이 필요합니다.';
-            break;
-          case 'others':
-            errorMessage = response.errorMessage || '알 수 없는 오류가 발생했습니다.';
-            break;
+    // 모바일에서는 expo-image-picker 사용
+    try {
+      // 권한 요청
+      if (useCamera) {
+        const cameraPermission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!cameraPermission.granted) {
+          Alert.alert('권한 필요', '카메라 접근 권한이 필요합니다.');
+          return;
         }
-        Alert.alert('오류', errorMessage);
-        return;
+      } else {
+        const mediaLibraryPermission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!mediaLibraryPermission.granted) {
+          Alert.alert('권한 필요', '갤러리 접근 권한이 필요합니다.');
+          return;
+        }
       }
-      
-      if (response.errorMessage) {
-        Alert.alert('오류', response.errorMessage);
-        return;
+
+      // 이미지 선택/촬영
+      let result;
+      if (useCamera) {
+        result = await ImagePicker.launchCameraAsync();
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync();
       }
-      
-      if (response.assets && response.assets.length > 0) {
-        const asset = response.assets[0];
-        const imageUri = asset.uri || null;
+
+      console.log('ImagePicker Result:', result);
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const imageUri = result.assets[0].uri;
         if (imageUri) {
           console.log('이미지 URI:', imageUri);
           setReceiptImage(imageUri);
@@ -275,15 +263,7 @@ export default function App() {
           Alert.alert('오류', '이미지 URI를 가져올 수 없습니다.');
         }
       } else {
-        Alert.alert('오류', '이미지를 선택할 수 없습니다.');
-      }
-    };
-
-    try {
-      if (useCamera) {
-        launchCamera(options, callback);
-      } else {
-        launchImageLibrary(options, callback);
+        console.log('사용자가 취소했습니다.');
       }
     } catch (error) {
       console.error('ImagePicker 실행 오류:', error);
@@ -317,11 +297,27 @@ export default function App() {
       
       formData.append('user_id', 'anonymous');
 
-      // MCP 서버 주소 (기존 웹 버전과 동일한 주소 사용)
-      const apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
+      // MCP 서버 주소 설정
+      // 웹: localhost 사용, 모바일: Expo 개발 서버의 PC IP 주소 사용
+      let apiUrl: string;
+      if (Platform.OS === 'web') {
+        apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
+      } else {
+        // Expo 개발 서버 URL에서 PC IP 추출
+        const debuggerHost = Constants.expoConfig?.hostUri || Constants.manifest?.debuggerHost;
+        if (debuggerHost) {
+          // debuggerHost 형식: "192.168.x.x:8081" -> "192.168.x.x" 추출
+          const hostIP = debuggerHost.split(':')[0];
+          apiUrl = `http://${hostIP}:8000/analyze_receipt`;
+        } else {
+          // fallback: localhost (개발 시 직접 수정 필요)
+          apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
+        }
+      }
       
       console.log('MCP 서버 요청:', apiUrl);
       console.log('플랫폼:', Platform.OS);
+      console.log('Debugger Host:', Constants.expoConfig?.hostUri || Constants.manifest?.debuggerHost);
       console.log('이미지 URI:', receiptImage?.substring(0, 50) + '...');
 
       const response = await fetch(apiUrl, {
@@ -477,8 +473,20 @@ export default function App() {
     });
 
     const data = Object.values(monthlyData);
+    
+    // 최고 지출액 기준으로 Y축 최대값 계산 (100000 단위로 올림)
+    const maxExpense = Math.max(...data, 0);
+    const maxYValue = maxExpense > 0 ? Math.ceil(maxExpense / 100000) * 100000 : 100000;
+    // segments는 최소 2 이상이어야 Y축 레이블이 제대로 표시됨
+    const segments = Math.max(2, Math.floor(maxYValue / 100000));
+    
+    // Y축 최대값을 제어하기 위해 데이터에 더미 최대값 추가
+    // labels와 data의 길이를 맞추기 위해 labels에도 빈 문자열 추가
+    // 빈 문자열은 X축에 표시되지 않음
+    const chartDataWithMax = [...data, maxYValue];
+    const chartLabelsWithDummy = [...labels, ''];
 
-    return { labels, data };
+    return { labels: chartLabelsWithDummy, data: chartDataWithMax, maxYValue, segments };
   };
 
   const selectedDateExpenses = getDayExpenses(selectedDate);
@@ -570,7 +578,7 @@ export default function App() {
                       styles.dayAmount,
                       shouldShowBackground && styles.selectedDayAmount
                     ]}>
-                      {dayTotal > 9999 ? `${Math.floor(dayTotal / 10000)}만` : dayTotal.toLocaleString()}
+                      {dayTotal.toLocaleString()}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -672,8 +680,24 @@ export default function App() {
                 stroke: '#000000'
               }
             }}
+            segments={chartData.segments}
+            fromZero={true}
+            yAxisInterval={100000}
+            formatYLabel={(value) => {
+              const numValue = parseInt(value);
+              if (isNaN(numValue)) return value;
+              // 100000 단위로 표시
+              if (numValue >= 100000) {
+                return `${Math.floor(numValue / 100000)}0만`;
+              } else if (numValue >= 10000) {
+                return `${Math.floor(numValue / 10000)}만`;
+              }
+              return numValue.toString();
+            }}
             bezier
             style={styles.chart}
+            withInnerLines={false}
+            withOuterLines={true}
           />
         </View>
       </ScrollView>
