@@ -432,7 +432,7 @@ export default function App() {
       let parsedAmount = 0;
       if (data.amount !== undefined && data.amount !== null) {
         if (typeof data.amount === 'number') {
-          parsedAmount = data.amount;
+          parsedAmount = data.amount > 0 ? data.amount : 0;
           console.log('amount가 숫자로 파싱됨:', parsedAmount);
         } else if (typeof data.amount === 'string') {
           const cleaned = data.amount.replace(/[^0-9]/g, '');
@@ -441,7 +441,7 @@ export default function App() {
         } else {
           // 다른 타입인 경우 Number로 변환 시도
           const numValue = Number(data.amount);
-          parsedAmount = isNaN(numValue) ? 0 : numValue;
+          parsedAmount = isNaN(numValue) ? 0 : (numValue > 0 ? numValue : 0);
           console.log('amount를 Number로 변환:', data.amount, '->', parsedAmount);
         }
       } else {
@@ -449,7 +449,7 @@ export default function App() {
         // amount가 없을 경우 total_amount나 다른 필드 확인
         if (data.total_amount !== undefined && data.total_amount !== null) {
           if (typeof data.total_amount === 'number') {
-            parsedAmount = data.total_amount;
+            parsedAmount = data.total_amount > 0 ? data.total_amount : 0;
           } else if (typeof data.total_amount === 'string') {
             const cleaned = data.total_amount.replace(/[^0-9]/g, '');
             parsedAmount = cleaned ? parseInt(cleaned, 10) : 0;
@@ -458,10 +458,91 @@ export default function App() {
         }
       }
       
-      console.log('최종 파싱된 amount:', parsedAmount);
+      console.log('최종 파싱된 amount (파싱 후):', parsedAmount);
 
       // items 처리
       let itemsArray: (string | ExpenseItem)[] = [];
+      
+      // 불필요한 항목 필터링 함수
+      const isUnnecessaryItem = (itemName: string): boolean => {
+        if (!itemName) return true;
+        
+        const normalizedName = itemName.trim();
+        const lowerName = normalizedName.toLowerCase();
+        
+        // *로 시작하는 항목 (영수증 요약 정보)
+        if (normalizedName.startsWith('*')) {
+          return true;
+        }
+        
+        // "-"로 시작하는 항목 (옵션, 부가 정보, 예: "- HOT")
+        if (normalizedName.startsWith('-')) {
+          return true;
+        }
+        
+        // 숫자만 있는 경우 (가격 정보일 가능성)
+        if (/^[\d,\s]+$/.test(normalizedName)) {
+          return true;
+        }
+        
+        // 단말기 번호, 승인번호 등이 포함된 항목 필터링
+        const systemKeywords = [
+          '단말기', '번호', '승인번호', '카드번호', '승인일시',
+          '매입사', '카드', '승인', '결제정보', '서비스제공사',
+          '문의', 'tel', '대표자', '주소', '매장명', '영수증',
+          '주문번호', '주문형태', '매출일', '영수증번호'
+        ];
+        
+        for (const keyword of systemKeywords) {
+          if (lowerName.includes(keyword.toLowerCase())) {
+            return true;
+          }
+        }
+        
+        // "번호: 숫자원" 같은 패턴 필터링
+        if (/번호\s*[:：]\s*\d+원?/i.test(normalizedName)) {
+          return true;
+        }
+        
+        // 필터링할 키워드 목록 (정확한 매칭)
+        const filterKeywords = [
+          '결제금액', '결 제 금 액', '결제 금액', '결제금액',
+          '과세금액', '과세 금액', '과세액',
+          '부가세', 'vat', '부가세액', '부가세 금액',
+          '합계', '총액', '소계', '총계',
+          '공급가액', '공급 가액', '공급가',
+          '합계금액', '합계 금액',
+          '총합계', '총 합계',
+          '소비자부담세액', '소비자 부담 세액'
+        ];
+        
+        // 키워드가 정확히 포함되는지 확인 (너무 광범위한 필터링 방지)
+        for (const keyword of filterKeywords) {
+          // 정확히 일치하거나, 키워드가 이름의 대부분을 차지하는 경우
+          if (lowerName === keyword.toLowerCase() || 
+              (lowerName.includes(keyword.toLowerCase()) && keyword.length >= 3)) {
+            // 단, 실제 상품명일 가능성 체크 (예: "과세상품" 같은 경우는 제외)
+            if (normalizedName.length > keyword.length + 5) {
+              // 키워드 외에 추가 텍스트가 많으면 실제 상품명일 수 있음
+              continue;
+            }
+            return true;
+          }
+        }
+        
+        // 숫자가 이름의 대부분을 차지하는 경우 (예: "23,636원" 같은 가격 정보)
+        const numberPattern = /[\d,]+원?/g;
+        const numbers = normalizedName.match(numberPattern);
+        if (numbers) {
+          const totalNumberLength = numbers.join('').length;
+          // 숫자가 전체 이름의 50% 이상을 차지하면 필터링
+          if (totalNumberLength >= normalizedName.length * 0.5) {
+            return true;
+          }
+        }
+        
+        return false;
+      };
       
       // price 파싱 헬퍼 함수
       const parsePrice = (priceValue: any): number | undefined => {
@@ -545,10 +626,20 @@ export default function App() {
           return String(item);
         }).filter(item => {
           if (typeof item === 'object' && !item.name) return false;
+          
+          // 불필요한 항목 필터링
+          const itemName = typeof item === 'object' ? item.name : String(item);
+          if (isUnnecessaryItem(itemName)) {
+            console.log(`  불필요한 항목 필터링: ${itemName}`);
+            return false;
+          }
+          
           return Boolean(item);
         });
       } else if (typeof data.items === 'string') {
-        itemsArray = data.items.split(',').map((item: string) => item.trim()).filter(Boolean);
+        itemsArray = data.items.split(',').map((item: string) => item.trim()).filter(item => {
+          return Boolean(item) && !isUnnecessaryItem(item);
+        });
       } else if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) {
         try {
           const values = Object.values(data.items);
@@ -576,15 +667,38 @@ export default function App() {
               };
             }
             return String(val);
-          }).filter(Boolean);
+          }).filter(item => {
+            if (!item) return false;
+            const itemName = typeof item === 'object' ? item.name : String(item);
+            return !isUnnecessaryItem(itemName);
+          });
         } catch {
           itemsArray = [JSON.stringify(data.items)];
         }
       } else if (data.items) {
-        itemsArray = [String(data.items)];
+        const itemStr = String(data.items);
+        if (!isUnnecessaryItem(itemStr)) {
+          itemsArray = [itemStr];
+        }
       }
       
       console.log('최종 파싱된 items:', JSON.stringify(itemsArray, null, 2));
+
+      // amount가 0이거나 없을 경우, items의 총합을 계산
+      if (parsedAmount === 0 && itemsArray.length > 0) {
+        const itemsTotal = itemsArray.reduce((sum, item) => {
+          if (typeof item === 'object' && item.price !== undefined && item.price !== null) {
+            const itemTotal = (item.price || 0) * (item.quantity || 1);
+            return sum + itemTotal;
+          }
+          return sum;
+        }, 0);
+        
+        if (itemsTotal > 0) {
+          console.log('amount가 0이므로 items 총합을 사용:', itemsTotal);
+          parsedAmount = itemsTotal;
+        }
+      }
 
       const analyzed = {
         storeName: data.store_name || data.storeName || '알 수 없음',
@@ -619,7 +733,7 @@ export default function App() {
 
     const expense: Expense = {
       id: Date.now().toString(),
-      date: format(new Date(), 'yyyy-MM-dd'),
+      date: selectedDate, // 선택된 날짜 사용
       storeName: analyzedData.storeName,
       amount: analyzedData.amount,
       category: analyzedData.category,
@@ -628,7 +742,7 @@ export default function App() {
 
     const newExpenses = [...expenses, expense];
     saveExpenses(newExpenses);
-    setSelectedDate(format(new Date(), 'yyyy-MM-dd'));
+    // selectedDate는 변경하지 않음 (사용자가 선택한 날짜 유지)
     
     // 초기화
     setReceiptImage(null);
