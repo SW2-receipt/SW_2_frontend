@@ -8,9 +8,9 @@ import {
   Modal,
   TextInput,
   Alert,
-  SafeAreaView,
   StatusBar,
 } from 'react-native';
+import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
 import { Calendar } from 'react-native-calendars';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -35,8 +35,16 @@ interface Expense {
 }
 
 const STORAGE_KEY = '@expenses';
+const LOGIN_STORAGE_KEY = '@isLoggedIn';
 
 export default function App() {
+  // 로그인 상태 관리
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [loginForm, setLoginForm] = useState({
+    username: '',
+    password: ''
+  });
+
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
@@ -62,8 +70,31 @@ export default function App() {
   const categories = ['식료품', '카페', '식당', '교통', '생활용품', '의류', '기타'];
 
   useEffect(() => {
+    // 앱 시작 시 로그인 상태 확인 (항상 false로 시작)
+    setIsLoggedIn(false);
     loadExpenses();
   }, []);
+
+  // 임시로 홈 화면 이동
+  const handleTemporaryLogin = () => {
+    setIsLoggedIn(true);
+  };
+
+  // 카카오 로그인 (임시 구현)
+  const handleKakaoLogin = () => {
+    Alert.alert('알림', '카카오 로그인 기능은 준비 중입니다.');
+    // 실제 구현 시 카카오 SDK 연동 필요
+  };
+
+  // 아이디/비밀번호 로그인 (임시 구현)
+  const handleIdPasswordLogin = () => {
+    if (!loginForm.username || !loginForm.password) {
+      Alert.alert('알림', '아이디와 비밀번호를 입력해주세요.');
+      return;
+    }
+    // 실제 구현 시 서버 인증 필요
+    Alert.alert('알림', '로그인 기능은 준비 중입니다.\n임시로 홈 화면 이동 버튼을 사용해주세요.');
+  };
 
   const loadExpenses = async () => {
     try {
@@ -172,21 +203,42 @@ export default function App() {
   };
 
   const handleDeleteExpense = (expenseId: string) => {
-    Alert.alert(
-      '삭제 확인',
-      '정말 삭제하시겠습니까?',
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '삭제',
-          style: 'destructive',
-          onPress: () => {
-            const newExpenses = expenses.filter(exp => exp.id !== expenseId);
-            saveExpenses(newExpenses);
+    const deleteExpense = async () => {
+      try {
+        const newExpenses = expenses.filter(exp => exp.id !== expenseId);
+        await saveExpenses(newExpenses);
+      } catch (error) {
+        console.error('삭제 오류:', error);
+        if (Platform.OS === 'web') {
+          if (typeof window !== 'undefined') {
+            window.alert('삭제 중 오류가 발생했습니다.');
           }
+        } else {
+          Alert.alert('오류', '삭제 중 오류가 발생했습니다.');
         }
-      ]
-    );
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      // 웹 환경에서는 confirm 사용
+      if (typeof window !== 'undefined' && window.confirm('정말 삭제하시겠습니까?')) {
+        deleteExpense();
+      }
+    } else {
+      // 모바일 환경에서는 Alert 사용
+      Alert.alert(
+        '삭제 확인',
+        '정말 삭제하시겠습니까?',
+        [
+          { text: '취소', style: 'cancel' },
+          {
+            text: '삭제',
+            style: 'destructive',
+            onPress: deleteExpense
+          }
+        ]
+      );
+    }
   };
 
   const handleEditExpense = (expense: Expense) => {
@@ -277,6 +329,23 @@ export default function App() {
     setIsAnalyzing(true);
     setAnalyzedData(null);
 
+    // MCP 서버 주소 설정 (에러 메시지에서 사용하기 위해 함수 상단에서 선언)
+    let apiUrl: string;
+    if (Platform.OS === 'web') {
+      apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
+    } else {
+      // Expo 개발 서버 URL에서 PC IP 추출
+      const debuggerHost = Constants.expoConfig?.hostUri || Constants.manifest?.debuggerHost;
+      if (debuggerHost) {
+        // debuggerHost 형식: "192.168.x.x:8081" -> "192.168.x.x" 추출
+        const hostIP = debuggerHost.split(':')[0];
+        apiUrl = `http://${hostIP}:8000/analyze_receipt`;
+      } else {
+        // fallback: localhost (개발 시 직접 수정 필요)
+        apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
+      }
+    }
+
     try {
       // FormData를 사용하여 이미지 업로드
       const formData = new FormData();
@@ -288,46 +357,51 @@ export default function App() {
         formData.append('image_file', blob, 'receipt.jpg');
       } else {
         // 모바일: uri 사용
+        // iOS는 file:// 제거, Android는 그대로 사용
+        let imageUri = receiptImage;
+        if (Platform.OS === 'ios' && imageUri.startsWith('file://')) {
+          imageUri = imageUri.replace('file://', '');
+        }
+        console.log('이미지 URI (처리 후):', imageUri);
         formData.append('image_file', {
-          uri: Platform.OS === 'android' ? receiptImage : receiptImage.replace('file://', ''),
+          uri: imageUri,
           type: 'image/jpeg',
           name: 'receipt.jpg',
         } as any);
       }
       
       formData.append('user_id', 'anonymous');
-
-      // MCP 서버 주소 설정
-      // 웹: localhost 사용, 모바일: Expo 개발 서버의 PC IP 주소 사용
-      let apiUrl: string;
-      if (Platform.OS === 'web') {
-        apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
-      } else {
-        // Expo 개발 서버 URL에서 PC IP 추출
-        const debuggerHost = Constants.expoConfig?.hostUri || Constants.manifest?.debuggerHost;
-        if (debuggerHost) {
-          // debuggerHost 형식: "192.168.x.x:8081" -> "192.168.x.x" 추출
-          const hostIP = debuggerHost.split(':')[0];
-          apiUrl = `http://${hostIP}:8000/analyze_receipt`;
-        } else {
-          // fallback: localhost (개발 시 직접 수정 필요)
-          apiUrl = 'http://127.0.0.1:8000/analyze_receipt';
-        }
-      }
       
       console.log('MCP 서버 요청:', apiUrl);
       console.log('플랫폼:', Platform.OS);
       console.log('Debugger Host:', Constants.expoConfig?.hostUri || Constants.manifest?.debuggerHost);
       console.log('이미지 URI:', receiptImage?.substring(0, 50) + '...');
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        body: formData,
-        mode: 'cors',
-        // FormData를 사용할 때는 Content-Type을 명시하지 않아야 브라우저가 자동으로 boundary를 설정함
+      // 타임아웃 설정 (30초)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('요청 시간이 초과되었습니다. 서버가 응답하지 않습니다.')), 30000);
       });
 
+      // 모바일에서는 mode: 'cors'를 사용하지 않음
+      const fetchOptions: any = {
+        method: 'POST',
+        body: formData,
+      };
+      
+      // 웹에서만 cors 모드 사용
+      if (Platform.OS === 'web') {
+        fetchOptions.mode = 'cors';
+      }
+      
+      // FormData를 사용할 때는 Content-Type을 명시하지 않아야 브라우저가 자동으로 boundary를 설정함
+
+      const fetchPromise = fetch(apiUrl, fetchOptions);
+      const response = await Promise.race([fetchPromise, timeoutPromise]) as Response;
+
       const responseText = await response.text();
+
+      console.log('서버 응답 상태:', response.status);
+      console.log('서버 응답 텍스트 (처음 500자):', responseText.substring(0, 500));
 
       if (!response.ok) {
         console.error('서버 오류 응답:', responseText);
@@ -344,32 +418,129 @@ export default function App() {
         data = JSON.parse(responseText);
       } catch (parseError) {
         console.error('JSON 파싱 오류:', parseError);
+        console.error('응답 텍스트 전체:', responseText);
         throw new Error('서버 응답 형식이 올바르지 않습니다.');
       }
 
-      console.log('API 응답 데이터:', data);
+      console.log('API 응답 데이터 (전체):', JSON.stringify(data, null, 2));
+      console.log('API 응답 데이터 타입:', typeof data);
+      console.log('amount 원본 값:', data.amount, '타입:', typeof data.amount);
+      console.log('amount 키 존재 여부:', 'amount' in data);
+      console.log('모든 키:', Object.keys(data));
 
-      // amount 처리
+      // amount 처리 - 더 강화된 파싱
       let parsedAmount = 0;
-      if (typeof data.amount === 'number') {
-        parsedAmount = data.amount;
-      } else if (typeof data.amount === 'string') {
-        const cleaned = data.amount.replace(/[^0-9]/g, '');
-        parsedAmount = parseInt(cleaned, 10) || 0;
-      } else if (data.amount) {
-        parsedAmount = Number(data.amount) || 0;
+      if (data.amount !== undefined && data.amount !== null) {
+        if (typeof data.amount === 'number') {
+          parsedAmount = data.amount;
+          console.log('amount가 숫자로 파싱됨:', parsedAmount);
+        } else if (typeof data.amount === 'string') {
+          const cleaned = data.amount.replace(/[^0-9]/g, '');
+          parsedAmount = cleaned ? parseInt(cleaned, 10) : 0;
+          console.log('amount가 문자열에서 파싱됨:', data.amount, '->', parsedAmount);
+        } else {
+          // 다른 타입인 경우 Number로 변환 시도
+          const numValue = Number(data.amount);
+          parsedAmount = isNaN(numValue) ? 0 : numValue;
+          console.log('amount를 Number로 변환:', data.amount, '->', parsedAmount);
+        }
+      } else {
+        console.warn('amount가 undefined이거나 null입니다. data:', data);
+        // amount가 없을 경우 total_amount나 다른 필드 확인
+        if (data.total_amount !== undefined && data.total_amount !== null) {
+          if (typeof data.total_amount === 'number') {
+            parsedAmount = data.total_amount;
+          } else if (typeof data.total_amount === 'string') {
+            const cleaned = data.total_amount.replace(/[^0-9]/g, '');
+            parsedAmount = cleaned ? parseInt(cleaned, 10) : 0;
+          }
+          console.log('total_amount를 사용:', parsedAmount);
+        }
       }
+      
+      console.log('최종 파싱된 amount:', parsedAmount);
 
       // items 처리
       let itemsArray: (string | ExpenseItem)[] = [];
+      
+      // price 파싱 헬퍼 함수
+      const parsePrice = (priceValue: any): number | undefined => {
+        console.log(`    parsePrice 호출: 입력값="${priceValue}", 타입=${typeof priceValue}`);
+        
+        if (priceValue === undefined || priceValue === null || priceValue === '') {
+          console.log(`    parsePrice: undefined/null/빈문자열 -> undefined`);
+          return undefined;
+        }
+        
+        if (typeof priceValue === 'number') {
+          // 0 이상의 숫자는 모두 반환 (0도 유효한 가격일 수 있음)
+          const result = priceValue >= 0 ? priceValue : undefined;
+          console.log(`    parsePrice: 숫자 ${priceValue} -> ${result}`);
+          return result;
+        }
+        
+        if (typeof priceValue === 'string') {
+          const cleaned = priceValue.replace(/[^0-9]/g, '');
+          console.log(`    parsePrice: 문자열 "${priceValue}" -> cleaned="${cleaned}"`);
+          if (!cleaned) {
+            console.log(`    parsePrice: cleaned가 빈 문자열 -> undefined`);
+            return undefined;
+          }
+          const parsed = parseInt(cleaned, 10);
+          console.log(`    parsePrice: cleaned="${cleaned}" -> parsed=${parsed}, isNaN=${isNaN(parsed)}, >=0=${parsed >= 0}`);
+          const result = !isNaN(parsed) && parsed >= 0 ? parsed : undefined;
+          console.log(`    parsePrice: 최종 결과=${result}`);
+          return result;
+        }
+        
+        // 다른 타입인 경우 Number로 변환 시도
+        const numValue = Number(priceValue);
+        const result = !isNaN(numValue) && numValue >= 0 ? numValue : undefined;
+        console.log(`    parsePrice: 다른 타입 ${priceValue} -> Number(${numValue}) -> ${result}`);
+        return result;
+      };
+      
+      console.log('items 원본 데이터:', JSON.stringify(data.items, null, 2));
+      console.log('items 타입:', typeof data.items, 'isArray:', Array.isArray(data.items));
+      
       if (Array.isArray(data.items)) {
-        itemsArray = data.items.map(item => {
+        itemsArray = data.items.map((item, index) => {
           if (typeof item === 'object' && item !== null) {
-            return {
+            console.log(`Item ${index}:`, JSON.stringify(item, null, 2));
+            
+            // price 파싱 - 여러 필드 확인 (순서대로 시도)
+            let parsedPrice: number | undefined = undefined;
+            
+            // 가능한 모든 price 필드명 확인
+            const priceFields = ['price', '가격', 'amount', '금액', 'cost', '단가'];
+            for (const field of priceFields) {
+              if (item[field] !== undefined && item[field] !== null && item[field] !== '') {
+                parsedPrice = parsePrice(item[field]);
+                if (parsedPrice !== undefined) {
+                  console.log(`  item.${field} 파싱: ${item[field]} -> ${parsedPrice}`);
+                  break;
+                }
+              }
+            }
+            
+            if (parsedPrice === undefined) {
+              console.log(`  price를 찾을 수 없음. item의 모든 키:`, Object.keys(item));
+            }
+            
+            const result = {
               name: item.name || item.item || item.product || item.title || item.품목 || item.상품명 || '품목',
-              price: item.price || item.가격 || (typeof item.price === 'string' ? parseInt(item.price.replace(/[^0-9]/g, ''), 10) : undefined),
-              quantity: item.quantity || item.수량 || item.qty || undefined
+              price: parsedPrice,
+              quantity: item.quantity !== undefined && item.quantity !== null 
+                ? (typeof item.quantity === 'number' ? item.quantity : parseInt(String(item.quantity), 10) || undefined)
+                : (item.수량 !== undefined && item.수량 !== null 
+                    ? (typeof item.수량 === 'number' ? item.수량 : parseInt(String(item.수량), 10) || undefined)
+                    : (item.qty !== undefined && item.qty !== null 
+                        ? (typeof item.qty === 'number' ? item.qty : parseInt(String(item.qty), 10) || undefined)
+                        : undefined))
             };
+            
+            console.log(`  최종 파싱된 item:`, result);
+            return result;
           }
           return String(item);
         }).filter(item => {
@@ -383,10 +554,25 @@ export default function App() {
           const values = Object.values(data.items);
           itemsArray = values.map(val => {
             if (typeof val === 'object' && val !== null) {
+              let parsedPrice: number | undefined = undefined;
+              
+              // 가능한 모든 price 필드명 확인
+              const priceFields = ['price', '가격', 'amount', '금액', 'cost', '단가'];
+              for (const field of priceFields) {
+                if (val[field] !== undefined && val[field] !== null && val[field] !== '') {
+                  parsedPrice = parsePrice(val[field]);
+                  if (parsedPrice !== undefined) {
+                    break;
+                  }
+                }
+              }
+              
               return {
                 name: val.name || val.item || '품목',
-                price: val.price || undefined,
-                quantity: val.quantity || undefined
+                price: parsedPrice,
+                quantity: val.quantity !== undefined && val.quantity !== null 
+                  ? (typeof val.quantity === 'number' ? val.quantity : parseInt(String(val.quantity), 10) || undefined)
+                  : undefined
               };
             }
             return String(val);
@@ -397,6 +583,8 @@ export default function App() {
       } else if (data.items) {
         itemsArray = [String(data.items)];
       }
+      
+      console.log('최종 파싱된 items:', JSON.stringify(itemsArray, null, 2));
 
       const analyzed = {
         storeName: data.store_name || data.storeName || '알 수 없음',
@@ -410,10 +598,14 @@ export default function App() {
       console.error('분석 오류:', err);
       let errorMessage = '분석 중 오류가 발생했습니다.';
       
-      if (err instanceof TypeError && err.message.includes('fetch')) {
-        errorMessage = 'MCP 서버에 연결할 수 없습니다.\n서버가 실행 중인지 확인해주세요.\n(http://127.0.0.1:8000)';
+      if (err instanceof TypeError && (err.message.includes('fetch') || err.message.includes('network'))) {
+        errorMessage = 'MCP 서버에 연결할 수 없습니다.\n\n서버가 실행 중인지 확인해주세요.\n서버 주소: ' + apiUrl;
       } else if (err instanceof Error) {
-        errorMessage = err.message;
+        if (err.message.includes('시간이 초과')) {
+          errorMessage = '요청 시간이 초과되었습니다.\n\n서버가 응답하지 않거나 네트워크 연결에 문제가 있을 수 있습니다.\n서버 주소: ' + apiUrl;
+        } else {
+          errorMessage = err.message;
+        }
       }
       
       Alert.alert('오류', errorMessage);
@@ -479,24 +671,91 @@ export default function App() {
     const maxYValue = maxExpense > 0 ? Math.ceil(maxExpense / 100000) * 100000 : 100000;
     // segments는 최소 2 이상이어야 Y축 레이블이 제대로 표시됨
     const segments = Math.max(2, Math.floor(maxYValue / 100000));
-    
-    // Y축 최대값을 제어하기 위해 데이터에 더미 최대값 추가
-    // labels와 data의 길이를 맞추기 위해 labels에도 빈 문자열 추가
-    // 빈 문자열은 X축에 표시되지 않음
-    const chartDataWithMax = [...data, maxYValue];
-    const chartLabelsWithDummy = [...labels, ''];
 
-    return { labels: chartLabelsWithDummy, data: chartDataWithMax, maxYValue, segments };
+    return { labels, data, maxYValue, segments };
   };
 
   const selectedDateExpenses = getDayExpenses(selectedDate);
   const selectedDateTotal = getDayTotal(selectedDate);
   const chartData = getMonthlyChartData();
 
+  // 로그인 화면
+  if (!isLoggedIn) {
+    return (
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.loginContainer}>
+          {Platform.OS !== 'web' && <StatusBar barStyle="dark-content" />}
+          <View style={styles.loginContent}>
+            {/* 앱 로고/이름 */}
+            <View style={styles.logoContainer}>
+              <Text style={styles.logoText}>가계부</Text>
+              <Text style={styles.loginSubtitle}>영수증으로 간편하게 가계부를 관리하세요</Text>
+            </View>
+
+            {/* 로그인 버튼들 */}
+            <View style={styles.loginButtonsContainer}>
+              {/* 아이디/비밀번호 입력 */}
+              <View style={styles.idPasswordContainer}>
+                <TextInput
+                  style={styles.loginInput}
+                  placeholder="아이디"
+                  placeholderTextColor="#999"
+                  value={loginForm.username}
+                  onChangeText={(text) => setLoginForm({ ...loginForm, username: text })}
+                  autoCapitalize="none"
+                />
+                <TextInput
+                  style={styles.loginInput}
+                  placeholder="비밀번호"
+                  placeholderTextColor="#999"
+                  value={loginForm.password}
+                  onChangeText={(text) => setLoginForm({ ...loginForm, password: text })}
+                  secureTextEntry
+                  autoCapitalize="none"
+                />
+                <TouchableOpacity
+                  style={styles.idPasswordLoginButton}
+                  onPress={handleIdPasswordLogin}
+                >
+                  <Text style={styles.idPasswordLoginText}>로그인</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* 카카오 로그인 */}
+              <TouchableOpacity
+                style={styles.kakaoLoginButton}
+                onPress={handleKakaoLogin}
+              >
+                <View style={styles.loginButtonContent}>
+                  <Image
+                    source={{ uri: 'https://tse3.mm.bing.net/th/id/OIP.CpAAgH6tP1hmWm4gS7evKgHaHa?rs=1&pid=ImgDetMain&o=7&rm=3' }}
+                    style={styles.kakaoIconImage}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.kakaoLoginText}>카카오로 로그인</Text>
+                </View>
+              </TouchableOpacity>
+
+              {/* 임시로 홈 화면 이동 */}
+              <TouchableOpacity
+                style={styles.temporaryLoginButton}
+                onPress={handleTemporaryLogin}
+              >
+                <Text style={styles.temporaryLoginText}>임시로 홈 화면 이동</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    );
+  }
+
+  // 홈 화면 (기존 가계부 화면)
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" />
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.contentContainer}>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.container}>
+        {Platform.OS !== 'web' && <StatusBar barStyle="dark-content" />}
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.contentContainer}>
         {/* 헤더 */}
         <View style={styles.header}>
           <View>
@@ -618,8 +877,8 @@ export default function App() {
                             ) : (
                               <Text style={styles.itemText}>
                                 <Text style={styles.itemName}>{item.name}</Text>
-                                {item.price && <Text style={styles.itemPrice}> {item.price.toLocaleString()}원</Text>}
-                                {item.quantity && <Text style={styles.itemQuantity}> (수량: {item.quantity})</Text>}
+                                {item.price !== undefined && item.price !== null && <Text style={styles.itemPrice}> {item.price.toLocaleString()}원</Text>}
+                                {item.quantity !== undefined && item.quantity !== null && <Text style={styles.itemQuantity}> (수량: {item.quantity})</Text>}
                               </Text>
                             )}
                           </View>
@@ -698,6 +957,8 @@ export default function App() {
             style={styles.chart}
             withInnerLines={false}
             withOuterLines={true}
+            withVerticalLabels={true}
+            withHorizontalLabels={true}
           />
         </View>
       </ScrollView>
@@ -927,11 +1188,102 @@ export default function App() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  // 로그인 화면 스타일
+  loginContainer: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+  },
+  loginContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 40,
+  },
+  logoContainer: {
+    alignItems: 'center',
+    marginBottom: 60,
+  },
+  logoText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#000000',
+    marginBottom: 12,
+  },
+  loginSubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+  },
+  loginButtonsContainer: {
+    gap: 12,
+  },
+  kakaoLoginButton: {
+    backgroundColor: '#FEE500',
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: '#FEE500',
+  },
+  loginButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  kakaoIconImage: {
+    width: 24,
+    height: 24,
+  },
+  kakaoLoginText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+  },
+  idPasswordContainer: {
+    gap: 12,
+    marginTop: 8,
+  },
+  loginInput: {
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    backgroundColor: '#f9f9f9',
+  },
+  idPasswordLoginButton: {
+    backgroundColor: '#22c55e',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  idPasswordLoginText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  temporaryLoginButton: {
+    backgroundColor: '#16a34a',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  temporaryLoginText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  // 홈 화면 스타일
   container: {
     flex: 1,
     backgroundColor: '#f5f5f5',
@@ -998,11 +1350,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
     marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+      },
+    }),
   },
   dayContainer: {
     alignItems: 'center',
@@ -1045,11 +1404,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+      },
+    }),
   },
   cardTitle: {
     fontSize: 20,
@@ -1154,11 +1520,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    ...Platform.select({
+      web: {
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+      },
+      default: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 3,
+      },
+    }),
   },
   chart: {
     marginVertical: 8,
