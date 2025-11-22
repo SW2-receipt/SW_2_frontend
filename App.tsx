@@ -16,7 +16,7 @@ import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { format } from 'date-fns';
 import { LineChart } from 'react-native-chart-kit';
-import { Dimensions, Platform, Image } from 'react-native';
+import { Dimensions, Platform, Image, Linking } from 'react-native';
 import Constants from 'expo-constants';
 
 interface ExpenseItem {
@@ -37,9 +37,19 @@ interface Expense {
 const STORAGE_KEY = '@expenses';
 const LOGIN_STORAGE_KEY = '@isLoggedIn';
 
+interface UserInfo {
+  id: number;
+  email: string;
+  name: string;
+  role: string;
+  provider: string;
+  createdAt: string;
+}
+
 export default function App() {
   // 로그인 상태 관리
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [loginForm, setLoginForm] = useState({
     username: '',
     password: ''
@@ -69,10 +79,76 @@ export default function App() {
 
   const categories = ['식료품', '카페', '식당', '교통', '생활용품', '의류', '기타'];
 
+  // 백엔드에서 사용자 정보 가져오기
+  const fetchUserInfo = async () => {
+    try {
+      const response = await fetch('http://localhost:8080/api/users/me', {
+        method: 'GET',
+        credentials: 'include', // 쿠키 포함 (세션 인증)
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const userData = await response.json();
+        setUserInfo(userData);
+        setIsLoggedIn(true);
+        return true;
+      } else {
+        // 로그인 안 된 상태
+        setUserInfo(null);
+        setIsLoggedIn(false);
+        return false;
+      }
+    } catch (error) {
+      console.error('사용자 정보 가져오기 실패:', error);
+      setUserInfo(null);
+      setIsLoggedIn(false);
+      return false;
+    }
+  };
+
+  // 로그아웃
+  const handleLogout = async () => {
+    try {
+      // 백엔드 로그아웃 엔드포인트 호출 (필요시)
+      // await fetch('http://localhost:8080/logout', { method: 'POST', credentials: 'include' });
+      
+      setUserInfo(null);
+      setIsLoggedIn(false);
+      
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        // 로그인 페이지로 리다이렉트
+        window.location.href = window.location.origin;
+      }
+    } catch (error) {
+      console.error('로그아웃 실패:', error);
+    }
+  };
+
   useEffect(() => {
-    // 앱 시작 시 로그인 상태 확인 (항상 false로 시작)
-    setIsLoggedIn(false);
+    // 앱 시작 시 로그인 상태 확인
     loadExpenses();
+    
+    // 웹 환경에서 URL 파라미터 확인 (카카오 로그인 성공 후 리다이렉트)
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const loginStatus = urlParams.get('login');
+      
+      if (loginStatus === 'success') {
+        // 로그인 성공 - 백엔드에서 사용자 정보 가져오기
+        fetchUserInfo();
+        // URL에서 파라미터 제거 (깔끔한 URL 유지)
+        window.history.replaceState({}, '', window.location.pathname);
+      } else {
+        // URL 파라미터가 없으면 백엔드에서 로그인 상태 확인
+        fetchUserInfo();
+      }
+    } else {
+      // 모바일 환경에서는 기본적으로 로그인 안 된 상태
+      setIsLoggedIn(false);
+    }
   }, []);
 
   // 임시로 홈 화면 이동
@@ -80,10 +156,51 @@ export default function App() {
     setIsLoggedIn(true);
   };
 
-  // 카카오 로그인 (임시 구현)
-  const handleKakaoLogin = () => {
-    Alert.alert('알림', '카카오 로그인 기능은 준비 중입니다.');
-    // 실제 구현 시 카카오 SDK 연동 필요
+  // 카카오 로그인
+  const handleKakaoLogin = async () => {
+    // 백엔드 OAuth2 엔드포인트로 리다이렉트
+    const backendUrl = 'http://localhost:8080/oauth2/authorization/kakao';
+    
+    console.log('카카오 로그인 시작 - 리다이렉트 URL:', backendUrl);
+    
+    // 먼저 백엔드가 실행 중인지 확인
+    try {
+      const healthCheck = await fetch('http://localhost:8080/health', {
+        method: 'GET',
+        credentials: 'include',
+      });
+      
+      if (!healthCheck.ok) {
+        Alert.alert('오류', '백엔드 서버에 연결할 수 없습니다.\n백엔드가 실행 중인지 확인해주세요.');
+        console.error('백엔드 health check 실패:', healthCheck.status);
+        return;
+      }
+      
+      console.log('백엔드 서버 연결 확인됨');
+    } catch (error) {
+      console.error('백엔드 서버 연결 실패:', error);
+      Alert.alert('오류', '백엔드 서버에 연결할 수 없습니다.\n\n백엔드가 실행 중인지 확인해주세요.\n(포트 8080)');
+      return;
+    }
+    
+    if (Platform.OS === 'web') {
+      // 웹 환경에서는 window.location 사용
+      if (typeof window !== 'undefined') {
+        console.log('리다이렉트 시작:', backendUrl);
+        try {
+          window.location.href = backendUrl;
+        } catch (error) {
+          console.error('리다이렉트 실패:', error);
+          Alert.alert('오류', '리다이렉트 중 오류가 발생했습니다.');
+        }
+      }
+    } else {
+      // 모바일 환경에서는 Linking 사용
+      Linking.openURL(backendUrl).catch(err => {
+        console.error('카카오 로그인 리다이렉트 실패:', err);
+        Alert.alert('오류', '카카오 로그인 페이지를 열 수 없습니다.');
+      });
+    }
   };
 
   // 아이디/비밀번호 로그인 (임시 구현)
@@ -872,35 +989,51 @@ export default function App() {
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.contentContainer}>
         {/* 헤더 */}
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerLeft}>
             <Text style={styles.title}>가계부</Text>
             <Text style={styles.subtitle}>
               이번 달 총 지출: <Text style={styles.totalAmount}>{getMonthlyTotal().toLocaleString()}원</Text>
             </Text>
           </View>
-          <View style={styles.headerButtons}>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => {
-                setEditingExpense(null);
-                setFormData({
-                  date: selectedDate,
-                  storeName: '',
-                  amount: '',
-                  category: '식료품',
-                  memo: ''
-                });
-                setIsAddModalVisible(true);
-              }}
-            >
-              <Text style={styles.iconButtonText}>+</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.uploadButton}
-              onPress={handleReceiptUpload}
-            >
-              <Text style={styles.uploadButtonText}>📷 영수증</Text>
-            </TouchableOpacity>
+          <View style={styles.headerRight}>
+            {/* 사용자 정보와 로그아웃 버튼 */}
+            {userInfo && (
+              <View style={styles.userInfoContainer}>
+                <Text style={styles.userInfoText}>
+                  👤 {userInfo.name}
+                </Text>
+                <TouchableOpacity
+                  style={styles.logoutButton}
+                  onPress={handleLogout}
+                >
+                  <Text style={styles.logoutButtonText}>로그아웃</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            <View style={styles.headerButtons}>
+              <TouchableOpacity
+                style={styles.iconButton}
+                onPress={() => {
+                  setEditingExpense(null);
+                  setFormData({
+                    date: selectedDate,
+                    storeName: '',
+                    amount: '',
+                    category: '식료품',
+                    memo: ''
+                  });
+                  setIsAddModalVisible(true);
+                }}
+              >
+                <Text style={styles.iconButtonText}>+</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.uploadButton}
+                onPress={handleReceiptUpload}
+              >
+                <Text style={styles.uploadButtonText}>📷 영수증</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -1411,9 +1544,17 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 20,
     paddingTop: 10,
+  },
+  headerLeft: {
+    flex: 1,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   title: {
     fontSize: 28,
@@ -1425,6 +1566,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666',
   },
+  userInfoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  userInfoText: {
+    fontSize: 12,
+    color: '#666',
+  },
+  logoutButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 6,
+  },
+  logoutButtonText: {
+    fontSize: 11,
+    color: '#666',
+    fontWeight: '600',
+  },
   totalAmount: {
     color: '#ef4444',
     fontWeight: 'bold',
@@ -1432,6 +1593,7 @@ const styles = StyleSheet.create({
   headerButtons: {
     flexDirection: 'row',
     gap: 10,
+    alignItems: 'center',
   },
   iconButton: {
     width: 44,
