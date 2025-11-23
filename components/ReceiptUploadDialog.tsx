@@ -108,7 +108,7 @@ export function ReceiptUploadDialog({ open, onOpenChange, onUpload }: ReceiptUpl
       let itemsArray: (string | ExpenseItem)[] = [];
       if (Array.isArray(data.items)) {
         // 배열인 경우
-        itemsArray = data.items.map(item => {
+        itemsArray = data.items.map((item: any) => {
           // 각 요소가 객체인 경우 객체 그대로 유지
           if (typeof item === 'object' && item !== null) {
             return {
@@ -119,7 +119,7 @@ export function ReceiptUploadDialog({ open, onOpenChange, onUpload }: ReceiptUpl
           }
           // 문자열이나 숫자인 경우 문자열로 유지
           return String(item);
-        }).filter(item => {
+        }).filter((item: any) => {
           // name이 없는 빈 객체는 제거
           if (typeof item === 'object' && !item.name) return false;
           return Boolean(item);
@@ -130,8 +130,8 @@ export function ReceiptUploadDialog({ open, onOpenChange, onUpload }: ReceiptUpl
       } else if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) {
         // 단일 객체인 경우
         try {
-          const values = Object.values(data.items);
-          itemsArray = values.map(val => {
+          const values = Object.values(data.items as Record<string, any>);
+          itemsArray = values.map((val: any) => {
             if (typeof val === 'object' && val !== null) {
               return {
                 name: val.name || val.item || '품목',

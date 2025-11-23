@@ -9,6 +9,7 @@ import {
   TextInput,
   Alert,
   StatusBar,
+  Linking,
 } from 'react-native';
 import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
 import { Calendar } from 'react-native-calendars';
@@ -36,6 +37,16 @@ interface Expense {
 
 const STORAGE_KEY = '@expenses';
 const LOGIN_STORAGE_KEY = '@isLoggedIn';
+const JWT_TOKEN_KEY = '@jwtToken';
+const API_BASE =
+  (Constants?.expoConfig as any)?.extra?.API_BASE ||
+  'http://localhost:8080';
+const NAVER_LOGIN_PATH =
+  (Constants?.expoConfig as any)?.extra?.NAVER_LOGIN_PATH ||
+  '/oauth2/authorization/naver';
+const KAKAO_LOGIN_PATH =
+  (Constants?.expoConfig as any)?.extra?.KAKAO_LOGIN_PATH ||
+  '/oauth2/authorization/kakao';
 
 export default function App() {
   // 로그인 상태 관리
@@ -69,21 +80,143 @@ export default function App() {
 
   const categories = ['식료품', '카페', '식당', '교통', '생활용품', '의류', '기타'];
 
+  // 웹 리다이렉트(/auth/kakao/callback?token=...)를 처리해서 메인 화면으로 이동
   useEffect(() => {
-    // 앱 시작 시 로그인 상태 확인 (항상 false로 시작)
-    setIsLoggedIn(false);
+    if (Platform.OS !== 'web') return;
+    const { pathname, search } = window.location;
+    if (pathname.startsWith('/auth/kakao/callback') || pathname.startsWith('/auth/naver/callback')) {
+      const params = new URLSearchParams(search);
+      const token = params.get('token');
+      if (token) {
+        // JWT 토큰 저장
+        AsyncStorage.setItem(JWT_TOKEN_KEY, token);
+        AsyncStorage.setItem(LOGIN_STORAGE_KEY, 'true');
+        setIsLoggedIn(true);
+        // 로그인 성공 후 메인으로 이동
+        window.history.replaceState({}, '', '/main');
+      } else {
+        // 토큰이 없으면 로그인 실패
+        AsyncStorage.removeItem(JWT_TOKEN_KEY);
+        AsyncStorage.removeItem(LOGIN_STORAGE_KEY);
+        setIsLoggedIn(false);
+        window.history.replaceState({}, '', '/');
+      }
+      return;
+    }
+  }, []);
+
+  // JWT 토큰으로 로그인 상태 확인
+  const verifyToken = async (token: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/users/me`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      return response.ok;
+    } catch (error) {
+      console.error('Token verification error:', error);
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    // 앱 시작 시 로그인 상태 확인 및 라우팅 처리
+    (async () => {
+      const savedToken = await AsyncStorage.getItem(JWT_TOKEN_KEY);
+      const savedLogin = await AsyncStorage.getItem(LOGIN_STORAGE_KEY);
+      
+      if (Platform.OS === 'web') {
+        const { pathname } = window.location;
+        
+        // JWT 토큰이 있으면 유효성 검증
+        if (savedToken) {
+          const isValid = await verifyToken(savedToken);
+          if (isValid) {
+            // 토큰이 유효하면 로그인 상태 유지
+            setIsLoggedIn(true);
+            if (pathname === '/' || pathname === '') {
+              // 루트 경로에서 유효한 토큰이 있으면 메인으로 이동
+              window.history.replaceState({}, '', '/main');
+            }
+            return;
+          } else {
+            // 토큰이 유효하지 않으면 로그아웃 처리
+            await AsyncStorage.removeItem(JWT_TOKEN_KEY);
+            await AsyncStorage.removeItem(LOGIN_STORAGE_KEY);
+            setIsLoggedIn(false);
+            if (pathname.startsWith('/main')) {
+              window.history.replaceState({}, '', '/');
+            }
+            return;
+          }
+        }
+        
+        // 토큰이 없고 /main에 접근하려고 하면 로그인 화면으로
+        if (pathname.startsWith('/main')) {
+          await AsyncStorage.removeItem(JWT_TOKEN_KEY);
+          await AsyncStorage.removeItem(LOGIN_STORAGE_KEY);
+          window.history.replaceState({}, '', '/');
+          setIsLoggedIn(false);
+          return;
+        }
+      } else {
+        // 모바일: 토큰이 있으면 유효성 검증
+        if (savedToken) {
+          const isValid = await verifyToken(savedToken);
+          if (isValid) {
+            setIsLoggedIn(true);
+            return;
+          } else {
+            await AsyncStorage.removeItem(JWT_TOKEN_KEY);
+            await AsyncStorage.removeItem(LOGIN_STORAGE_KEY);
+            setIsLoggedIn(false);
+            return;
+          }
+        }
+      }
+      
+      // 토큰이 없으면 로그아웃 상태
+      setIsLoggedIn(false);
+    })();
+    
     loadExpenses();
   }, []);
 
-  // 임시로 홈 화면 이동
+  // 임시로 홈 화면 이동 (개발용)
   const handleTemporaryLogin = () => {
     setIsLoggedIn(true);
+    AsyncStorage.setItem(LOGIN_STORAGE_KEY, 'true');
+    // 임시 로그인은 토큰 없이 진행 (개발용)
+    if (Platform.OS === 'web') {
+      window.history.replaceState({}, '', '/main');
+    }
   };
 
-  // 카카오 로그인 (임시 구현)
+  // 카카오 로그인
   const handleKakaoLogin = () => {
-    Alert.alert('알림', '카카오 로그인 기능은 준비 중입니다.');
-    // 실제 구현 시 카카오 SDK 연동 필요
+    const kakaoUrl = `${API_BASE}/oauth/kakao/login`;
+    if (Platform.OS === 'web') {
+      window.location.href = kakaoUrl;
+    } else {
+      Linking.openURL(kakaoUrl).catch(() =>
+        Alert.alert('알림', '로그인 페이지를 열 수 없습니다.')
+      );
+    }
+  };
+  
+  // 네이버 로그인
+  const handleNaverLogin = () => {
+    const naverUrl = `${API_BASE}/oauth/naver/login`;
+    if (Platform.OS === 'web') {
+      window.location.href = naverUrl;
+    } else {
+      Linking.openURL(naverUrl).catch(() =>
+        Alert.alert('알림', '로그인 페이지를 열 수 없습니다.')
+      );
+    }
   };
 
   // 아이디/비밀번호 로그인 (임시 구현)
@@ -585,9 +718,10 @@ export default function App() {
       console.log('items 타입:', typeof data.items, 'isArray:', Array.isArray(data.items));
       
       if (Array.isArray(data.items)) {
-        itemsArray = data.items.map((item, index) => {
+        itemsArray = data.items.map((item: any, index: number) => {
           if (typeof item === 'object' && item !== null) {
-            console.log(`Item ${index}:`, JSON.stringify(item, null, 2));
+            const itemObj = item as Record<string, any>;
+            console.log(`Item ${index}:`, JSON.stringify(itemObj, null, 2));
             
             // price 파싱 - 여러 필드 확인 (순서대로 시도)
             let parsedPrice: number | undefined = undefined;
@@ -595,28 +729,28 @@ export default function App() {
             // 가능한 모든 price 필드명 확인
             const priceFields = ['price', '가격', 'amount', '금액', 'cost', '단가'];
             for (const field of priceFields) {
-              if (item[field] !== undefined && item[field] !== null && item[field] !== '') {
-                parsedPrice = parsePrice(item[field]);
+              if (itemObj[field] !== undefined && itemObj[field] !== null && itemObj[field] !== '') {
+                parsedPrice = parsePrice(itemObj[field]);
                 if (parsedPrice !== undefined) {
-                  console.log(`  item.${field} 파싱: ${item[field]} -> ${parsedPrice}`);
+                  console.log(`  item.${field} 파싱: ${itemObj[field]} -> ${parsedPrice}`);
                   break;
                 }
               }
             }
             
             if (parsedPrice === undefined) {
-              console.log(`  price를 찾을 수 없음. item의 모든 키:`, Object.keys(item));
+              console.log(`  price를 찾을 수 없음. item의 모든 키:`, Object.keys(itemObj));
             }
             
             const result = {
-              name: item.name || item.item || item.product || item.title || item.품목 || item.상품명 || '품목',
+              name: itemObj.name || itemObj.item || itemObj.product || itemObj.title || itemObj.품목 || itemObj.상품명 || '품목',
               price: parsedPrice,
-              quantity: item.quantity !== undefined && item.quantity !== null 
-                ? (typeof item.quantity === 'number' ? item.quantity : parseInt(String(item.quantity), 10) || undefined)
-                : (item.수량 !== undefined && item.수량 !== null 
-                    ? (typeof item.수량 === 'number' ? item.수량 : parseInt(String(item.수량), 10) || undefined)
-                    : (item.qty !== undefined && item.qty !== null 
-                        ? (typeof item.qty === 'number' ? item.qty : parseInt(String(item.qty), 10) || undefined)
+              quantity: itemObj.quantity !== undefined && itemObj.quantity !== null 
+                ? (typeof itemObj.quantity === 'number' ? itemObj.quantity : parseInt(String(itemObj.quantity), 10) || undefined)
+                : (itemObj.수량 !== undefined && itemObj.수량 !== null 
+                    ? (typeof itemObj.수량 === 'number' ? itemObj.수량 : parseInt(String(itemObj.수량), 10) || undefined)
+                    : (itemObj.qty !== undefined && itemObj.qty !== null 
+                        ? (typeof itemObj.qty === 'number' ? itemObj.qty : parseInt(String(itemObj.qty), 10) || undefined)
                         : undefined))
             };
             
@@ -624,7 +758,7 @@ export default function App() {
             return result;
           }
           return String(item);
-        }).filter(item => {
+        }).filter((item: any) => {
           if (typeof item === 'object' && !item.name) return false;
           
           // 불필요한 항목 필터링
@@ -637,13 +771,13 @@ export default function App() {
           return Boolean(item);
         });
       } else if (typeof data.items === 'string') {
-        itemsArray = data.items.split(',').map((item: string) => item.trim()).filter(item => {
+        itemsArray = data.items.split(',').map((item: string) => item.trim()).filter((item: string) => {
           return Boolean(item) && !isUnnecessaryItem(item);
         });
       } else if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) {
         try {
-          const values = Object.values(data.items);
-          itemsArray = values.map(val => {
+          const values = Object.values(data.items as Record<string, any>);
+          itemsArray = values.map((val: any) => {
             if (typeof val === 'object' && val !== null) {
               let parsedPrice: number | undefined = undefined;
               
@@ -808,32 +942,20 @@ export default function App() {
 
             {/* 로그인 버튼들 */}
             <View style={styles.loginButtonsContainer}>
-              {/* 아이디/비밀번호 입력 */}
-              <View style={styles.idPasswordContainer}>
-                <TextInput
-                  style={styles.loginInput}
-                  placeholder="아이디"
-                  placeholderTextColor="#999"
-                  value={loginForm.username}
-                  onChangeText={(text) => setLoginForm({ ...loginForm, username: text })}
-                  autoCapitalize="none"
-                />
-                <TextInput
-                  style={styles.loginInput}
-                  placeholder="비밀번호"
-                  placeholderTextColor="#999"
-                  value={loginForm.password}
-                  onChangeText={(text) => setLoginForm({ ...loginForm, password: text })}
-                  secureTextEntry
-                  autoCapitalize="none"
-                />
-                <TouchableOpacity
-                  style={styles.idPasswordLoginButton}
-                  onPress={handleIdPasswordLogin}
-                >
-                  <Text style={styles.idPasswordLoginText}>로그인</Text>
-                </TouchableOpacity>
-              </View>
+              {/* 네이버 로그인 */}
+              <TouchableOpacity
+                style={styles.naverLoginButton}
+                onPress={handleNaverLogin}
+              >
+                <View style={styles.loginButtonContent}>
+                  <Image
+                    source={require('./style/naver.png')}
+                    style={styles.kakaoIconImage}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.kakaoLoginText}>네이버로 로그인</Text>
+                </View>
+              </TouchableOpacity>
 
               {/* 카카오 로그인 */}
               <TouchableOpacity
@@ -908,8 +1030,8 @@ export default function App() {
         <View style={styles.calendarContainer}>
           <Calendar
             current={selectedDate}
-            onDayPress={(day) => setSelectedDate(day.dateString)}
-            onMonthChange={(month) => setCurrentMonth(format(new Date(month.year, month.month - 1, 1), 'yyyy-MM'))}
+            onDayPress={(day: any) => setSelectedDate(day.dateString)}
+            onMonthChange={(month: any) => setCurrentMonth(format(new Date(month.year, month.month - 1, 1), 'yyyy-MM'))}
             markedDates={getMarkedDates()}
             monthFormat={'yyyy년 M월'}
             theme={{
@@ -920,7 +1042,8 @@ export default function App() {
               textDisabledColor: '#d3d3d3',
               textInactiveColor: '#d3d3d3',
             }}
-            dayComponent={({ date, state }) => {
+            dayComponent={({ date, state }: any) => {
+              if (!date) return null;
               const dayTotal = getDayTotal(date.dateString);
               const dateMonth = format(new Date(date.year, date.month - 1, 1), 'yyyy-MM');
               const isOtherMonth = dateMonth !== currentMonth;
@@ -1337,6 +1460,14 @@ const styles = StyleSheet.create({
   loginButtonsContainer: {
     gap: 12,
   },
+  naverLoginButton: {
+    backgroundColor: '#1EC800', // 네이버 그린
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: '#1EC800',
+  },
   kakaoLoginButton: {
     backgroundColor: '#FEE500',
     borderRadius: 12,
@@ -1374,28 +1505,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9f9f9',
   },
   idPasswordLoginButton: {
-    backgroundColor: '#22c55e',
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: 'center',
-    marginTop: 4,
+    display: 'none',
   },
   idPasswordLoginText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#ffffff',
+    display: 'none',
   },
   temporaryLoginButton: {
-    backgroundColor: '#16a34a',
-    borderRadius: 12,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 8,
+    // 버튼은 유지하되 화면에 보이지 않도록 처리
+    opacity: 0,
+    height: 0,
+    paddingVertical: 0,
+    marginTop: 0,
   },
   temporaryLoginText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
+    opacity: 0,
+    height: 0,
   },
   // 홈 화면 스타일
   container: {
